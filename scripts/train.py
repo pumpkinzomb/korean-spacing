@@ -10,7 +10,7 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from datasets import load_dataset
@@ -19,6 +19,8 @@ from torch import nn
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+
+from korean_spacing.modeling import CharSpacingModel
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -32,6 +34,57 @@ NUM_LABELS = 3  # 0: 없음, 1: 공백, 2: 개행
 CHAR_VOCAB_SIZE = 65536
 PAD_TOKEN_ID = 0
 UNK_TOKEN_ID = CHAR_VOCAB_SIZE - 1
+
+CHOSEONG_LIST = [
+    "ㄱ",
+    "ㄲ",
+    "ㄴ",
+    "ㄷ",
+    "ㄸ",
+    "ㄹ",
+    "ㅁ",
+    "ㅂ",
+    "ㅃ",
+    "ㅅ",
+    "ㅆ",
+    "ㅇ",
+    "ㅈ",
+    "ㅉ",
+    "ㅊ",
+    "ㅋ",
+    "ㅌ",
+    "ㅍ",
+    "ㅎ",
+]
+JUNGSEONG_LIST = [
+    "ㅏ",
+    "ㅐ",
+    "ㅑ",
+    "ㅒ",
+    "ㅓ",
+    "ㅔ",
+    "ㅕ",
+    "ㅖ",
+    "ㅗ",
+    "ㅘ",
+    "ㅙ",
+    "ㅚ",
+    "ㅛ",
+    "ㅜ",
+    "ㅝ",
+    "ㅞ",
+    "ㅟ",
+    "ㅠ",
+    "ㅡ",
+    "ㅢ",
+    "ㅣ",
+]
+JONGSEONG_COUNT = 28  # 빈 종성 포함
+
+CHOSEONG_VOCAB_SIZE = len(CHOSEONG_LIST) + 1  # + pad
+JUNGSEONG_VOCAB_SIZE = len(JUNGSEONG_LIST) + 1
+JONGSEONG_VOCAB_SIZE = JONGSEONG_COUNT + 1
+
 BATCH_SIZE = int(os.getenv("TRAIN_BATCH_SIZE", 32))
 EPOCHS = int(os.getenv("TRAIN_EPOCHS", 3))
 LEARNING_RATE = float(os.getenv("TRAIN_LR", 3e-4))
@@ -40,6 +93,14 @@ EVAL_SPLIT = float(os.getenv("EVAL_SPLIT", 0.1))
 SEED = int(os.getenv("TRAIN_SEED", 42))
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 AMP_DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
+
+CHAR_EMBED_DIM = int(os.getenv("CHAR_EMBED_DIM", 128))
+SUBCHAR_EMBED_DIM = int(os.getenv("SUBCHAR_EMBED_DIM", 32))
+MODEL_DIM = int(os.getenv("MODEL_DIM", 256))
+TRANSFORMER_HEADS = int(os.getenv("TRANSFORMER_HEADS", 8))
+TRANSFORMER_LAYERS = int(os.getenv("TRANSFORMER_LAYERS", 4))
+TRANSFORMER_FEEDFORWARD_DIM = int(os.getenv("TRANSFORMER_FEEDFORWARD_DIM", 512))
+TRANSFORMER_DROPOUT = float(os.getenv("TRANSFORMER_DROPOUT", 0.1))
 
 DATASET_CANDIDATES_ENV = os.getenv("DATASET_CANDIDATES")
 DATASET_MODE = os.getenv("DATASET_MODE", "fallback").lower()
@@ -75,7 +136,7 @@ else:
 GRAD_CLIP_ENABLED = os.getenv("GRAD_CLIP_ENABLED", "true").lower() != "false"
 GRAD_CLIP_MAX_NORM = float(os.getenv("GRAD_CLIP_MAX_NORM", "1.0"))
 BOUNDARY_EPS = 1e-8
-CONTINUE_TRAIN = os.getenv("CONTINUE_TRAIN", "true").lower() == "true"
+CONTINUE_TRAIN = os.getenv("CONTINUE_TRAIN", "false").lower() == "true"
 
 os.makedirs(MODEL_ARTIFACT_DIR, exist_ok=True)
 random.seed(SEED)
@@ -90,6 +151,21 @@ def char_to_id(ch: str) -> int:
     if code >= CHAR_VOCAB_SIZE:
         return UNK_TOKEN_ID
     return code
+
+
+def decompose_jamo_ids(ch: str) -> Tuple[int, int, int]:
+    """한글 음절을 초/중/종성 ID로 변환 (패딩은 0)."""
+    code = ord(ch)
+    if 0xAC00 <= code <= 0xD7A3:
+        syllable_index = code - 0xAC00
+        choseong_index = syllable_index // 588
+        jungseong_index = (syllable_index % 588) // 28
+        jongseong_index = syllable_index % 28
+        choseong_id = choseong_index + 1
+        jungseong_id = jungseong_index + 1
+        jongseong_id = jongseong_index + 1  # 1이 '없음'
+        return choseong_id, jungseong_id, jongseong_id
+    return 0, 0, 0
 
 
 class SpacingDataset(Dataset):
@@ -113,58 +189,34 @@ class SpacingDataset(Dataset):
         input_ids = torch.full((self.max_length,), PAD_TOKEN_ID, dtype=torch.long)
         attention_mask = torch.zeros(self.max_length, dtype=torch.long)
         label_tensor = torch.full((self.max_length,), -100, dtype=torch.long)
+        choseong_tensor = torch.zeros(self.max_length, dtype=torch.long)
+        jungseong_tensor = torch.zeros(self.max_length, dtype=torch.long)
+        jongseong_tensor = torch.zeros(self.max_length, dtype=torch.long)
 
-        chars = [char_to_id(ch) for ch in text][: self.max_length]
+        raw_chars = list(text)[: self.max_length]
+        chars = [char_to_id(ch) for ch in raw_chars]
+        jamo_ids = [decompose_jamo_ids(ch) for ch in raw_chars]
         labels = label_seq[: self.max_length]
         length = len(chars)
 
         input_ids[:length] = torch.tensor(chars, dtype=torch.long)
         attention_mask[:length] = 1
         label_tensor[:length] = torch.tensor(labels, dtype=torch.long)
+        if jamo_ids:
+            choseong, jungseong, jongseong = zip(*jamo_ids)
+            choseong_tensor[:length] = torch.tensor(choseong, dtype=torch.long)
+            jungseong_tensor[:length] = torch.tensor(jungseong, dtype=torch.long)
+            jongseong_tensor[:length] = torch.tensor(jongseong, dtype=torch.long)
 
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": label_tensor,
+            "choseong_ids": choseong_tensor,
+            "jungseong_ids": jungseong_tensor,
+            "jongseong_ids": jongseong_tensor,
             "length": length,
         }
-
-
-class CharSpacingModel(nn.Module):
-    """간단한 BiLSTM 기반 공백/개행 예측 모델."""
-
-    def __init__(
-        self,
-        vocab_size: int = CHAR_VOCAB_SIZE,
-        embedding_dim: int = 128,
-        hidden_dim: int = 256,
-        num_layers: int = 2,
-        num_labels: int = NUM_LABELS,
-        dropout: float = 0.2,
-    ):
-        super().__init__()
-        self.embedding = nn.Embedding(
-            vocab_size, embedding_dim, padding_idx=PAD_TOKEN_ID
-        )
-        self.encoder = nn.LSTM(
-            embedding_dim,
-            hidden_dim // 2,
-            num_layers=num_layers,
-            batch_first=True,
-            bidirectional=True,
-            dropout=dropout if num_layers > 1 else 0.0,
-        )
-        self.dropout = nn.Dropout(dropout)
-        self.classifier = nn.Linear(hidden_dim, num_labels)
-
-    def forward(
-        self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None
-    ):
-        x = self.embedding(input_ids)
-        encoded, _ = self.encoder(x)
-        encoded = self.dropout(encoded)
-        logits = self.classifier(encoded)
-        return logits
 
 
 def parse_dataset_candidates():
@@ -396,19 +448,32 @@ def evaluate(model: CharSpacingModel, data_loader: DataLoader, criterion, device
     total_loss = 0.0
     total_tokens = 0
     correct = 0
-    tp = fp = fn = 0.0
+    boundary_stats = {"tp": 0.0, "fp": 0.0, "fn": 0.0}
+    per_label_stats = {
+        1: {"tp": 0.0, "fp": 0.0, "fn": 0.0},  # 공백
+        2: {"tp": 0.0, "fp": 0.0, "fn": 0.0},  # 개행
+    }
 
     with torch.no_grad():
         for batch in data_loader:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
+            choseong_ids = batch["choseong_ids"].to(device)
+            jungseong_ids = batch["jungseong_ids"].to(device)
+            jongseong_ids = batch["jongseong_ids"].to(device)
 
             with torch.amp.autocast(
                 device_type=AMP_DEVICE_TYPE,
                 enabled=AMP_ENABLED and AMP_DEVICE_TYPE == "cuda",
             ):
-                logits = model(input_ids, attention_mask)
+                logits = model(
+                    input_ids,
+                    attention_mask,
+                    choseong_ids,
+                    jungseong_ids,
+                    jongseong_ids,
+                )
                 loss = criterion(logits.view(-1, NUM_LABELS), labels.view(-1))
             total_loss += loss.item()
 
@@ -422,18 +487,49 @@ def evaluate(model: CharSpacingModel, data_loader: DataLoader, criterion, device
 
             gold_boundary = labels_flat[mask] > 0
             pred_boundary = preds_flat[mask] > 0
-            tp += torch.logical_and(gold_boundary, pred_boundary).sum().item()
-            fp += torch.logical_and(~gold_boundary, pred_boundary).sum().item()
-            fn += torch.logical_and(gold_boundary, ~pred_boundary).sum().item()
+            boundary_stats["tp"] += torch.logical_and(
+                gold_boundary, pred_boundary
+            ).sum().item()
+            boundary_stats["fp"] += torch.logical_and(
+                ~gold_boundary, pred_boundary
+            ).sum().item()
+            boundary_stats["fn"] += torch.logical_and(
+                gold_boundary, ~pred_boundary
+            ).sum().item()
+
+            for label_id, stats in per_label_stats.items():
+                gold_mask = labels_flat[mask] == label_id
+                pred_mask = preds_flat[mask] == label_id
+                stats["tp"] += torch.logical_and(gold_mask, pred_mask).sum().item()
+                stats["fp"] += torch.logical_and(~gold_mask, pred_mask).sum().item()
+                stats["fn"] += torch.logical_and(gold_mask, ~pred_mask).sum().item()
 
     avg_loss = total_loss / max(1, len(data_loader))
     accuracy = correct / max(1, total_tokens)
 
-    precision = tp / (tp + fp + BOUNDARY_EPS)
-    recall = tp / (tp + fn + BOUNDARY_EPS)
-    boundary_f1 = 2 * precision * recall / (precision + recall + BOUNDARY_EPS)
+    def compute_prf(stats: Dict[str, float]):
+        precision = stats["tp"] / (stats["tp"] + stats["fp"] + BOUNDARY_EPS)
+        recall = stats["tp"] / (stats["tp"] + stats["fn"] + BOUNDARY_EPS)
+        f1 = 2 * precision * recall / (precision + recall + BOUNDARY_EPS)
+        return precision, recall, f1
 
-    return avg_loss, accuracy, boundary_f1
+    boundary_precision, boundary_recall, boundary_f1 = compute_prf(boundary_stats)
+    space_precision, space_recall, space_f1 = compute_prf(per_label_stats[1])
+    newline_precision, newline_recall, newline_f1 = compute_prf(per_label_stats[2])
+
+    return {
+        "loss": avg_loss,
+        "accuracy": accuracy,
+        "boundary_precision": boundary_precision,
+        "boundary_recall": boundary_recall,
+        "boundary_f1": boundary_f1,
+        "space_precision": space_precision,
+        "space_recall": space_recall,
+        "space_f1": space_f1,
+        "newline_precision": newline_precision,
+        "newline_recall": newline_recall,
+        "newline_f1": newline_f1,
+    }
 
 
 def train_model():
@@ -445,7 +541,22 @@ def train_model():
     dataset_pairs = list(zip(texts, labels))
     schedule = parse_curriculum_schedule()
 
-    model = CharSpacingModel().to(DEVICE)
+    model = CharSpacingModel(
+        char_vocab_size=CHAR_VOCAB_SIZE,
+        num_labels=NUM_LABELS,
+        pad_token_id=PAD_TOKEN_ID,
+        max_length=MAX_LENGTH,
+        char_embedding_dim=CHAR_EMBED_DIM,
+        subchar_embedding_dim=SUBCHAR_EMBED_DIM,
+        model_dim=MODEL_DIM,
+        num_heads=TRANSFORMER_HEADS,
+        ff_dim=TRANSFORMER_FEEDFORWARD_DIM,
+        num_layers=TRANSFORMER_LAYERS,
+        dropout=TRANSFORMER_DROPOUT,
+        choseong_vocab_size=CHOSEONG_VOCAB_SIZE,
+        jungseong_vocab_size=JUNGSEONG_VOCAB_SIZE,
+        jongseong_vocab_size=JONGSEONG_VOCAB_SIZE,
+    ).to(DEVICE)
     if CONTINUE_TRAIN and MODEL_STATE_PATH.exists():
         state_dict = torch.load(MODEL_STATE_PATH, map_location=DEVICE)
         model.load_state_dict(state_dict)
@@ -510,12 +621,21 @@ def train_model():
                 input_ids = batch["input_ids"].to(DEVICE)
                 attention_mask = batch["attention_mask"].to(DEVICE)
                 label_tensor = batch["labels"].to(DEVICE)
+                choseong_ids = batch["choseong_ids"].to(DEVICE)
+                jungseong_ids = batch["jungseong_ids"].to(DEVICE)
+                jongseong_ids = batch["jongseong_ids"].to(DEVICE)
 
                 with torch.amp.autocast(
                     device_type=AMP_DEVICE_TYPE,
                     enabled=AMP_ENABLED and AMP_DEVICE_TYPE == "cuda",
                 ):
-                    logits = model(input_ids, attention_mask)
+                    logits = model(
+                        input_ids,
+                        attention_mask,
+                        choseong_ids,
+                        jungseong_ids,
+                        jongseong_ids,
+                    )
                     loss = criterion(logits.view(-1, NUM_LABELS), label_tensor.view(-1))
 
                 if AMP_ENABLED:
@@ -534,11 +654,16 @@ def train_model():
                 running_loss += loss.item()
 
             avg_train_loss = running_loss / max(1, len(train_loader))
-            val_loss, val_acc, val_f1 = evaluate(model, val_loader, criterion, DEVICE)
+            val_metrics = evaluate(model, val_loader, criterion, DEVICE)
+            val_loss = val_metrics["loss"]
+            val_acc = val_metrics["accuracy"]
             print(
                 f"[{stage_name} | Epoch {epoch}] "
                 f"train_loss={avg_train_loss:.4f} val_loss={val_loss:.4f} "
-                f"val_acc={val_acc:.4f} val_f1={val_f1:.4f}"
+                f"val_acc={val_acc:.4f} "
+                f"boundary_f1={val_metrics['boundary_f1']:.4f} "
+                f"space_f1={val_metrics['space_f1']:.4f} "
+                f"newline_f1={val_metrics['newline_f1']:.4f}"
             )
 
             if val_acc > best_val_accuracy:
@@ -554,10 +679,16 @@ def train_model():
         "char_vocab_size": CHAR_VOCAB_SIZE,
         "pad_token_id": PAD_TOKEN_ID,
         "unk_token_id": UNK_TOKEN_ID,
-        "embedding_dim": 128,
-        "hidden_dim": 256,
-        "num_layers": 2,
-        "dropout": 0.2,
+        "char_embedding_dim": CHAR_EMBED_DIM,
+        "subchar_embedding_dim": SUBCHAR_EMBED_DIM,
+        "model_dim": MODEL_DIM,
+        "transformer_heads": TRANSFORMER_HEADS,
+        "transformer_layers": TRANSFORMER_LAYERS,
+        "transformer_feedforward_dim": TRANSFORMER_FEEDFORWARD_DIM,
+        "transformer_dropout": TRANSFORMER_DROPOUT,
+        "choseong_vocab_size": CHOSEONG_VOCAB_SIZE,
+        "jungseong_vocab_size": JUNGSEONG_VOCAB_SIZE,
+        "jongseong_vocab_size": JONGSEONG_VOCAB_SIZE,
     }
     with open(MODEL_CONFIG_PATH, "w", encoding="utf-8") as fp:
         json.dump(config, fp, ensure_ascii=False, indent=2)

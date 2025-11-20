@@ -15,8 +15,9 @@ import json
 from pathlib import Path
 
 import torch
-import onnx
-from torch import nn
+import onnx  # noqa: F401
+
+from korean_spacing.modeling import CharSpacingModel
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -25,42 +26,6 @@ MODEL_ARTIFACT_DIR = MODELS_DIR / "korean_spacing_char"
 MODEL_STATE_PATH = MODEL_ARTIFACT_DIR / "char_spacing_model.pt"
 MODEL_CONFIG_PATH = MODEL_ARTIFACT_DIR / "config.json"
 ONNX_OUTPUT_PATH = MODELS_DIR / "korean_spacing.onnx"
-
-
-class CharSpacingModel(nn.Module):
-    def __init__(
-        self,
-        vocab_size: int,
-        embedding_dim: int,
-        hidden_dim: int,
-        num_layers: int,
-        num_labels: int,
-        dropout: float,
-        pad_token_id: int,
-    ):
-        super().__init__()
-        self.embedding = nn.Embedding(
-            vocab_size, embedding_dim, padding_idx=pad_token_id
-        )
-        self.encoder = nn.LSTM(
-            embedding_dim,
-            hidden_dim // 2,
-            num_layers=num_layers,
-            batch_first=True,
-            bidirectional=True,
-            dropout=dropout if num_layers > 1 else 0.0,
-        )
-        self.dropout = nn.Dropout(dropout)
-        self.classifier = nn.Linear(hidden_dim, num_labels)
-
-    def forward(
-        self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None
-    ):
-        x = self.embedding(input_ids)
-        encoded, _ = self.encoder(x)
-        encoded = self.dropout(encoded)
-        logits = self.classifier(encoded)
-        return logits
 
 
 def convert_to_onnx():
@@ -74,13 +39,20 @@ def convert_to_onnx():
         config = json.load(fp)
 
     model = CharSpacingModel(
-        vocab_size=config["char_vocab_size"],
-        embedding_dim=config["embedding_dim"],
-        hidden_dim=config["hidden_dim"],
-        num_layers=config["num_layers"],
+        char_vocab_size=config["char_vocab_size"],
         num_labels=config["num_labels"],
-        dropout=config["dropout"],
         pad_token_id=config["pad_token_id"],
+        max_length=config["max_length"],
+        char_embedding_dim=config["char_embedding_dim"],
+        subchar_embedding_dim=config["subchar_embedding_dim"],
+        model_dim=config["model_dim"],
+        num_heads=config["transformer_heads"],
+        ff_dim=config["transformer_feedforward_dim"],
+        num_layers=config["transformer_layers"],
+        dropout=config["transformer_dropout"],
+        choseong_vocab_size=config["choseong_vocab_size"],
+        jungseong_vocab_size=config["jungseong_vocab_size"],
+        jongseong_vocab_size=config["jongseong_vocab_size"],
     )
     state_dict = torch.load(MODEL_STATE_PATH, map_location="cpu")
     model.load_state_dict(state_dict)
@@ -88,13 +60,28 @@ def convert_to_onnx():
 
     dummy_input_ids = torch.zeros(1, config["max_length"], dtype=torch.long)
     dummy_attention_mask = torch.ones(1, config["max_length"], dtype=torch.long)
+    dummy_choseong_ids = torch.zeros(1, config["max_length"], dtype=torch.long)
+    dummy_jungseong_ids = torch.zeros(1, config["max_length"], dtype=torch.long)
+    dummy_jongseong_ids = torch.zeros(1, config["max_length"], dtype=torch.long)
 
     print("[ONNX] 변환 시작...")
     torch.onnx.export(
         model,
-        (dummy_input_ids, dummy_attention_mask),
+        (
+            dummy_input_ids,
+            dummy_attention_mask,
+            dummy_choseong_ids,
+            dummy_jungseong_ids,
+            dummy_jongseong_ids,
+        ),
         ONNX_OUTPUT_PATH.as_posix(),
-        input_names=["input_ids", "attention_mask"],
+        input_names=[
+            "input_ids",
+            "attention_mask",
+            "choseong_ids",
+            "jungseong_ids",
+            "jongseong_ids",
+        ],
         output_names=["logits"],
         opset_version=18,
         do_constant_folding=False,

@@ -10,6 +10,12 @@ const UNK_TOKEN_ID = VOCAB_SIZE - 1;
 const SPACE_LABEL = 1;
 const NEWLINE_LABEL = 2;
 
+const HANGUL_BASE = 0xac00;
+const CHOSEONG_COUNT = 19;
+const JUNGSEONG_COUNT = 21;
+const JONGSEONG_COUNT = 28;
+const HANGUL_LAST = HANGUL_BASE + CHOSEONG_COUNT * JUNGSEONG_COUNT * JONGSEONG_COUNT - 1;
+
 function charToId(char: string): number {
   const codePoint = char.codePointAt(0) ?? 0;
   const shifted = codePoint + 1; // 0은 PAD 전용
@@ -17,6 +23,28 @@ function charToId(char: string): number {
     return UNK_TOKEN_ID;
   }
   return shifted;
+}
+
+function decomposeHangul(char: string): [number, number, number] {
+  const codePoint = char.codePointAt(0);
+  if (
+    codePoint === undefined ||
+    codePoint < HANGUL_BASE ||
+    codePoint > HANGUL_LAST
+  ) {
+    return [0, 0, 0];
+  }
+
+  const syllableIndex = codePoint - HANGUL_BASE;
+  const choseong = Math.floor(
+    syllableIndex / (JUNGSEONG_COUNT * JONGSEONG_COUNT)
+  );
+  const jungseong = Math.floor(
+    (syllableIndex % (JUNGSEONG_COUNT * JONGSEONG_COUNT)) / JONGSEONG_COUNT
+  );
+  const jongseong = syllableIndex % JONGSEONG_COUNT;
+
+  return [choseong + 1, jungseong + 1, jongseong + 1];
 }
 
 export class KoreanSpacing {
@@ -41,15 +69,25 @@ export class KoreanSpacing {
   private tokenize(text: string): {
     inputIds: number[];
     attentionMask: number[];
+    choseongIds: number[];
+    jungseongIds: number[];
+    jongseongIds: number[];
     length: number;
   } {
     const chars = Array.from(text);
     const inputIds: number[] = [];
     const attentionMask: number[] = [];
+    const choseongIds: number[] = [];
+    const jungseongIds: number[] = [];
+    const jongseongIds: number[] = [];
 
     for (let i = 0; i < Math.min(chars.length, MAX_LENGTH); i++) {
       inputIds.push(charToId(chars[i]));
       attentionMask.push(1);
+      const [cho, jung, jong] = decomposeHangul(chars[i]);
+      choseongIds.push(cho);
+      jungseongIds.push(jung);
+      jongseongIds.push(jong);
     }
 
     const sequenceLength = inputIds.length;
@@ -57,11 +95,17 @@ export class KoreanSpacing {
     while (inputIds.length < MAX_LENGTH) {
       inputIds.push(PAD_TOKEN_ID);
       attentionMask.push(0);
+      choseongIds.push(0);
+      jungseongIds.push(0);
+      jongseongIds.push(0);
     }
 
     return {
       inputIds,
       attentionMask,
+      choseongIds,
+      jungseongIds,
+      jongseongIds,
       length: sequenceLength,
     };
   }
@@ -75,7 +119,14 @@ export class KoreanSpacing {
       return text;
     }
 
-    const { inputIds, attentionMask, length } = this.tokenize(text);
+    const {
+      inputIds,
+      attentionMask,
+      choseongIds,
+      jungseongIds,
+      jongseongIds,
+      length,
+    } = this.tokenize(text);
 
     const inputIdsTensor = new Tensor(
       "int64",
@@ -88,9 +139,28 @@ export class KoreanSpacing {
       [1, attentionMask.length]
     );
 
+    const choseongTensor = new Tensor(
+      "int64",
+      new BigInt64Array(choseongIds.map(BigInt)),
+      [1, choseongIds.length]
+    );
+    const jungseongTensor = new Tensor(
+      "int64",
+      new BigInt64Array(jungseongIds.map(BigInt)),
+      [1, jungseongIds.length]
+    );
+    const jongseongTensor = new Tensor(
+      "int64",
+      new BigInt64Array(jongseongIds.map(BigInt)),
+      [1, jongseongIds.length]
+    );
+
     const feeds = {
       input_ids: inputIdsTensor,
       attention_mask: attentionMaskTensor,
+      choseong_ids: choseongTensor,
+      jungseong_ids: jungseongTensor,
+      jongseong_ids: jongseongTensor,
     };
 
     const results = await this.session!.run(feeds);
