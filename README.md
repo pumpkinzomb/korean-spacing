@@ -84,6 +84,14 @@ python scripts/train.py
 환경 변수 `DATASET_CANDIDATES`를 설정하면 후보를 직접 지정할 수 있습니다. 예)  
 `DATASET_CANDIDATES="klue:ynat,lcw99/wikipedia-korean-20221001"`
 
+`.env`를 사용하려면 `env.example`를 복사하여 필요한 값을 수정하면 됩니다.
+
+```bash
+cp env.example .env
+# 필요 시 변수 수정
+npm run train
+```
+
 병합 모드가 필요하면 `DATASET_MODE=concat`으로 설정해 여러 데이터셋을 한 번에 결합할 수 있습니다(기본값 fallback).
 
 또한 `MAX_SAMPLES`, `TRAIN_BATCH_SIZE`, `TRAIN_EPOCHS` 등 환경 변수를 통해 데이터 크기와 학습 하이퍼파라미터를 조절할 수 있습니다.
@@ -100,6 +108,7 @@ CURRICULUM_SCHEDULE="80:2,200:1,512:2"
 ```
 
 각 단계는 길이 조건을 만족하는 문장을 자동으로 필터링하며, 이전 단계 모델 가중치를 그대로 이어받아 학습합니다.
+마지막에는 `all` 단계가 추가되어 1~3단계 데이터를 모두 섞어 한 번 더 미세 조정합니다.
 
 **학습 안정화 옵션**
 

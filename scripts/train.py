@@ -14,13 +14,14 @@ from typing import List, Optional, Tuple
 
 import torch
 from datasets import load_dataset
+from dotenv import load_dotenv
 from torch import nn
-from torch.cuda.amp import GradScaler
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT_DIR / ".env")
 MODELS_DIR = ROOT_DIR / "models"
 MODEL_ARTIFACT_DIR = MODELS_DIR / "korean_spacing_char"
 MODEL_STATE_PATH = MODEL_ARTIFACT_DIR / "char_spacing_model.pt"
@@ -56,6 +57,13 @@ DEFAULT_CURRICULUM = [
     {"name": "short", "max_length": 80, "epochs": 1},
     {"name": "medium", "max_length": 160, "epochs": 1},
     {"name": "full", "max_length": MAX_LENGTH, "epochs": max(1, EPOCHS)},
+    {
+        "name": "all",
+        "max_length": MAX_LENGTH,
+        "min_length": 0,
+        "epochs": 1,
+        "mix": True,
+    },
 ]
 
 AMP_ENABLED_ENV = os.getenv("AMP_ENABLED")
@@ -446,7 +454,9 @@ def train_model():
         print(f"[모델] CONTINUE_TRAIN=true 이지만 체크포인트가 없어 새로 학습합니다.")
     criterion = nn.CrossEntropyLoss(ignore_index=-100)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-    scaler = GradScaler(enabled=AMP_ENABLED)
+    scaler = torch.amp.GradScaler(
+        device_type=AMP_DEVICE_TYPE, enabled=AMP_ENABLED and AMP_DEVICE_TYPE == "cuda"
+    )
 
     best_val_accuracy = 0.0
     lower_bound = 0
@@ -456,11 +466,15 @@ def train_model():
         stage_epochs = max(1, stage.get("epochs", EPOCHS))
         stage_min = stage.get("min_length", lower_bound)
 
-        stage_pairs = [
-            (text, label)
-            for text, label in dataset_pairs
-            if stage_min < len(text) <= stage_max
-        ]
+        if stage.get("mix"):
+            stage_pairs = dataset_pairs[:]
+            random.shuffle(stage_pairs)
+        else:
+            stage_pairs = [
+                (text, label)
+                for text, label in dataset_pairs
+                if stage_min < len(text) <= stage_max
+            ]
 
         if not stage_pairs:
             print(f"[커리큘럼] {stage_name} 단계에 해당하는 데이터가 없어 건너뜁니다.")
