@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import torch
-from datasets import load_dataset
+from datasets import DatasetDict, concatenate_datasets, load_dataset
 from dotenv import load_dotenv
 from torch import nn
 from torch.nn.utils import clip_grad_norm_
@@ -298,11 +298,25 @@ def load_korean_dataset():
 
     if DATASET_MODE == "concat" and len(loaded) > 1:
         print(f"[데이터셋] {len(loaded)}개 데이터셋을 병합합니다.")
+
         merged_dataset = loaded[0][0]
         merged_name = loaded[0][1]
+
         for dataset, dataset_name in loaded[1:]:
-            merged_dataset = merged_dataset.concatenate(dataset)
+            merged_splits = {}
+            all_splits = set(merged_dataset.keys()).union(dataset.keys())
+            for split_name in all_splits:
+                if split_name in merged_dataset and split_name in dataset:
+                    merged_splits[split_name] = concatenate_datasets(
+                        [merged_dataset[split_name], dataset[split_name]]
+                    )
+                elif split_name in merged_dataset:
+                    merged_splits[split_name] = merged_dataset[split_name]
+                else:
+                    merged_splits[split_name] = dataset[split_name]
+            merged_dataset = DatasetDict(merged_splits)
             merged_name += f"+{dataset_name}"
+
         return merged_dataset, merged_name
 
     return loaded[0]

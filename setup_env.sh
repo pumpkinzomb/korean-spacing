@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 echo "🚀 Setting up environment for Korean Spacing Trainer..."
 
@@ -7,7 +7,8 @@ echo "🚀 Setting up environment for Korean Spacing Trainer..."
 if ! command -v node >/dev/null 2>&1; then
     echo "📦 Installing Node.js..."
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt install -y nodejs
+    apt-get update
+    apt-get install -y nodejs
 else
     echo "✅ Node.js already installed: $(node -v)"
 fi
@@ -24,16 +25,19 @@ else
     echo "✅ uv already installed: $(uv --version)"
 fi
 
-# 4️⃣ Make sure PATH includes uv
+# 4️⃣ Ensure uv in PATH for future shells
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-    source ~/.bashrc
+    export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# 5️⃣ Install Python deps
-if [ -f "requirements.txt" ]; then
-    echo "🐍 Installing Python dependencies..."
-    /usr/bin/uv pip install -r requirements.txt
+# 5️⃣ Install project dependencies via uv (pyproject)
+if [ -f "pyproject.toml" ]; then
+    echo "🐍 Installing Python dependencies via uv sync..."
+    uv sync
+elif [ -f "requirements.txt" ]; then
+    echo "🐍 Installing Python dependencies via requirements.txt..."
+    uv pip install -r requirements.txt
 fi
 
 echo "🎉 Environment setup complete!"
