@@ -565,9 +565,7 @@ def train_model():
         print(f"[모델] CONTINUE_TRAIN=true 이지만 체크포인트가 없어 새로 학습합니다.")
     criterion = nn.CrossEntropyLoss(ignore_index=-100)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-    scaler = torch.amp.GradScaler(
-        device_type=AMP_DEVICE_TYPE, enabled=AMP_ENABLED and AMP_DEVICE_TYPE == "cuda"
-    )
+    scaler = torch.amp.GradScaler(enabled=AMP_ENABLED and AMP_DEVICE_TYPE == "cuda")
 
     best_val_accuracy = 0.0
     lower_bound = 0
