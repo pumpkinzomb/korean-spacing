@@ -1,0 +1,20 @@
+[project]
+name = "korean-spacing"
+version = "0.1.0"
+description = "경량 한국어 띄어쓰기 교정 모델"
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=2.0.0",
+    "datasets>=2.14.0",
+    "onnx>=1.15.0",
+    "numpy>=1.24.0",
+    "tqdm>=4.66.0",
+    "onnxscript>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

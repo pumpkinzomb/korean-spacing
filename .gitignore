@@ -1,0 +1,17 @@
+node_modules/
+dist/
+models/*.onnx
+models/*.pt
+models/*.pth
+models/**/*.json
+*.log
+.DS_Store
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.uv/
+uv.lock
+

@@ -1,0 +1,37 @@
+{
+  "name": "korean-spacing",
+  "version": "0.1.0",
+  "description": "경량 한국어 띄어쓰기 교정 모델",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "train": "uv run python scripts/train.py",
+    "convert": "uv run python scripts/convert_to_onnx.py",
+    "install:python": "uv sync",
+    "example": "ts-node src/example.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "korean",
+    "spacing",
+    "nlp",
+    "korean-spacing",
+    "띄어쓰기"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "onnxruntime-node": "^1.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.2"
+  },
+  "files": [
+    "dist",
+    "models",
+    "README.md"
+  ]
+}
