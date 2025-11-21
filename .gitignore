@@ -1,9 +1,5 @@
 node_modules/
 dist/
-models/*.onnx
-models/*.pt
-models/*.pth
-models/**/*.json
 *.log
 .DS_Store
 .env
