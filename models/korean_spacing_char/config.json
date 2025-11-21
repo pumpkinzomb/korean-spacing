@@ -1,0 +1,17 @@
+{
+  "max_length": 512,
+  "num_labels": 3,
+  "char_vocab_size": 65536,
+  "pad_token_id": 0,
+  "unk_token_id": 65535,
+  "char_embedding_dim": 128,
+  "subchar_embedding_dim": 32,
+  "model_dim": 256,
+  "transformer_heads": 8,
+  "transformer_layers": 4,
+  "transformer_feedforward_dim": 512,
+  "transformer_dropout": 0.1,
+  "choseong_vocab_size": 20,
+  "jungseong_vocab_size": 22,
+  "jongseong_vocab_size": 29
+}
